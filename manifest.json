@@ -1,0 +1,9 @@
+{
+  "name": "SCS Member Portal",
+  "short_name": "SCS",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#7A1F3D",
+  "icons": []
+}
