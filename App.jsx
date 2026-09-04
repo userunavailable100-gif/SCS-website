@@ -215,6 +215,22 @@ export default function App() {
   const handleRegister = async (form) => {
     const { name, phone, cnic, email, username, password, sponsor } = form;
     if (!name || !phone || !cnic || !email || !username || !password) return notify("Please fill in all required fields.");
+
+    // Pakistani mobile number: 03XXXXXXXXX (11 digits) or +923XXXXXXXXX
+    const phoneDigits = phone.replace(/[^\d]/g, "");
+    const validPhone =
+      (phoneDigits.length === 11 && phoneDigits.startsWith("03")) ||
+      (phoneDigits.length === 12 && phoneDigits.startsWith("923"));
+    if (!validPhone) return notify("Enter a valid Pakistani number, e.g. 03XXXXXXXXX.");
+
+    // CNIC: 13 digits (with or without dashes)
+    const cnicDigits = cnic.replace(/[^\d]/g, "");
+    if (cnicDigits.length !== 13) return notify("Enter a valid 13-digit CNIC number, e.g. 12345-1234567-1.");
+
+    // Password: at least 6 characters, must contain both letters and numbers
+    const validPassword = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@#$%^&*!_-]{6,}$/.test(password);
+    if (!validPassword) return notify("Password must be at least 6 characters and include both letters and numbers.");
+
     if (users.some((u) => u.username === username)) return notify("This username is already taken.");
     if (users.some((u) => u.phone === phone)) return notify("This phone number is already registered.");
     const sponsorUser = sponsor ? users.find((u) => u.memberId === sponsor.toUpperCase()) : null;
@@ -352,6 +368,16 @@ export default function App() {
         const pAmt = Number(points || 0);
         await updateOrderDoc(orderId, { status, cashbackAwarded: cAmt, pointsAwarded: pAmt, creditGranted: true });
         await creditUserWallet(order.userId, cAmt, pAmt);
+        // Sponsor bonus: whoever referred this member also earns half the
+        // points (rounded down) on every delivered order from their team.
+        const buyer = users.find((u) => u.username === order.userId);
+        if (buyer && buyer.sponsorId) {
+          const sponsor = users.find((u) => u.memberId === buyer.sponsorId);
+          const sponsorPoints = Math.floor(pAmt / 2);
+          if (sponsor && sponsorPoints > 0) {
+            await creditUserWallet(sponsor.username, 0, sponsorPoints);
+          }
+        }
       } else {
         await updateOrderDoc(orderId, { status });
       }
@@ -657,7 +683,7 @@ function Home({ state, addToCart, setView, me }) {
         </div>
         <div className="grid grid-cols-3 gap-3">
           <TrustBadge icon={ShieldCheck} label="100% Genuine" />
-          <TrustBadge icon={Truck} label="Nationwide Delivery" />
+          <TrustBadge icon={Truck} label="Delivery All Over Pakistan" />
           <TrustBadge icon={Award} label="Trusted Members" />
         </div>
       </section>
@@ -713,12 +739,12 @@ function AuthRegister({ onSubmit, switchView, defaultSponsor }) {
       <p className="scs-muted text-sm mb-6">Create your member account.</p>
       <div className="space-y-3">
         <input className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="Full name" value={form.name} onChange={set("name")} />
-        <input className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="Phone number" value={form.phone} onChange={set("phone")} />
-        <input className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="CNIC number" value={form.cnic} onChange={set("cnic")} />
+        <input className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="Phone number (e.g. 03XXXXXXXXX)" value={form.phone} onChange={set("phone")} />
+        <input className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="CNIC number (e.g. 12345-1234567-1)" value={form.cnic} onChange={set("cnic")} />
         <input className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="Email address" value={form.email} onChange={set("email")} />
         <input className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="Choose a username" value={form.username} onChange={set("username")} />
         <div className="relative">
-          <input type={showPw ? "text" : "password"} className="scs-input rounded-lg px-3 py-2.5 w-full text-sm pr-10" placeholder="Password" value={form.password} onChange={set("password")} />
+          <input type={showPw ? "text" : "password"} className="scs-input rounded-lg px-3 py-2.5 w-full text-sm pr-10" placeholder="Password (letters + numbers, min 6)" value={form.password} onChange={set("password")} />
           <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-3 top-2.5">
             {showPw ? <EyeOff size={16} className="scs-muted" /> : <Eye size={16} className="scs-muted" />}
           </button>
