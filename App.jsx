@@ -6,7 +6,7 @@ import {
   Eye, EyeOff, Minus, Clock, Loader, XCircle, CheckCircle2,
   MoreVertical, Share2, Home as HomeIcon, LayoutDashboard
 } from "lucide-react";
-import { loadPlatformState, savePlatformState } from "./firebase";
+import { subscribeProducts, subscribeUsers, subscribeOrders, subscribeWithdrawals, addProductDoc, updateProductDoc, deleteProductDoc, addUserDoc, updateUserDoc, creditUserWallet, addOrderDoc, updateOrderDoc, addWithdrawalDoc, updateWithdrawalDoc, getNextMemberId } from "./firebase";
 
 const ADMIN_USERNAME = "scs_owner_26";
 const ADMIN_PASS = "Scs#Vault!9247Qx";
@@ -86,19 +86,28 @@ function Toast({ message, onClose }) {
 }
 
 export default function App() {
-  const [state, setState] = useState(null);
+  const [products, setProducts] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [withdrawals, setWithdrawals] = useState([]);
+  const [loadedFlags, setLoadedFlags] = useState({ products: false, users: false, orders: false, withdrawals: false });
   const [currentUser, setCurrentUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [view, setView] = useState("verify");
   const [verified, setVerified] = useState(false);
   const [cart, setCart] = useState({});
-  const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState("");
   const [refFromUrl, setRefFromUrl] = useState("");
   const [justCreated, setJustCreated] = useState(null); // {id, email, password}
   const [showDisclaimer, setShowDisclaimer] = useState(false);
   const [revealSCS, setRevealSCS] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+
+  const loading = !(loadedFlags.products && loadedFlags.users && loadedFlags.orders && loadedFlags.withdrawals);
+  // This combined object is rebuilt every render from the four live-synced
+  // collections above, so every screen below still reads state.products /
+  // state.users / etc exactly as before — only how the data gets here changed.
+  const state = { users, products, orders, withdrawals };
 
   const notify = (msg) => setToast(msg);
 
@@ -134,39 +143,39 @@ export default function App() {
     setMenuOpen(false);
   };
 
-  const loadState = useCallback(async () => {
-    setLoading(true);
-    try {
-      const value = await loadPlatformState();
-      if (value) {
-        setState(JSON.parse(value));
-      } else {
-        throw new Error("empty");
-      }
-    } catch (e) {
-      const fresh = { users: [], products: seedProducts, orders: [], withdrawals: [], nextIdNumber: 100001 };
-      try {
-        await savePlatformState(JSON.stringify(fresh));
-      } catch (err) {
-        console.error(err);
-      }
-      setState(fresh);
-    }
-    setLoading(false);
+  const loadState = useCallback(() => {
+    let seeded = false;
+    const unsubs = [
+      subscribeProducts(async (rows) => {
+        setProducts(rows);
+        setLoadedFlags((f) => ({ ...f, products: true }));
+        if (!seeded && rows.length === 0) {
+          seeded = true;
+          try {
+            for (const p of seedProducts) await addProductDoc(p);
+          } catch (e) {
+            console.error("Seeding failed", e);
+          }
+        }
+      }),
+      subscribeUsers((rows) => {
+        setUsers(rows);
+        setLoadedFlags((f) => ({ ...f, users: true }));
+      }),
+      subscribeOrders((rows) => {
+        setOrders(rows.sort((a, b) => new Date(b.date) - new Date(a.date)));
+        setLoadedFlags((f) => ({ ...f, orders: true }));
+      }),
+      subscribeWithdrawals((rows) => {
+        setWithdrawals(rows.sort((a, b) => new Date(b.date) - new Date(a.date)));
+        setLoadedFlags((f) => ({ ...f, withdrawals: true }));
+      }),
+    ];
+    return () => unsubs.forEach((u) => u && u());
   }, []);
 
-  const saveState = async (next) => {
-    setState(next);
-    try {
-      await savePlatformState(JSON.stringify(next));
-    } catch (e) {
-      console.error(e);
-      notify("Save failed, please retry.");
-    }
-  };
-
   useEffect(() => {
-    loadState();
+    const unsubscribe = loadState();
     try {
       const params = new URLSearchParams(window.location.search);
       const ref = params.get("ref");
@@ -181,20 +190,21 @@ export default function App() {
         }
       } catch (e) {}
     })();
+    return unsubscribe;
   }, [loadState]);
 
   useEffect(() => {
-    if (!state || !currentUser) return;
+    if (loading || !currentUser) return;
     if (currentUser === "__admin__") {
       setIsAdmin(true);
       setView("admin");
-    } else if (state.users.find((u) => u.username === currentUser)) {
+    } else if (users.find((u) => u.username === currentUser)) {
       setView("dashboard");
     }
-  }, [currentUser, state === null]);
+  }, [currentUser, loading]);
 
-  const me = state && currentUser && currentUser !== "__admin__"
-    ? state.users.find((u) => u.username === currentUser)
+  const me = currentUser && currentUser !== "__admin__"
+    ? users.find((u) => u.username === currentUser)
     : null;
 
   const handleVerify = () => {
@@ -203,26 +213,29 @@ export default function App() {
   };
 
   const handleRegister = async (form) => {
-    if (!state) return;
     const { name, phone, cnic, email, username, password, sponsor } = form;
     if (!name || !phone || !cnic || !email || !username || !password) return notify("Please fill in all required fields.");
-    if (state.users.some((u) => u.username === username)) return notify("This username is already taken.");
-    if (state.users.some((u) => u.phone === phone)) return notify("This phone number is already registered.");
-    const sponsorUser = sponsor ? state.users.find((u) => u.memberId === sponsor.toUpperCase()) : null;
-    const memberId = `SCS-${state.nextIdNumber}`;
-    const newUser = {
-      id: genId("u"),
-      memberId,
-      name, phone, cnic, email, username, password,
-      sponsorId: sponsorUser ? sponsorUser.memberId : null,
-      walletBalance: 0,
-      points: 0,
-      joinedAt: new Date().toISOString(),
-    };
-    const next = { ...state, users: [...state.users, newUser], nextIdNumber: state.nextIdNumber + 1 };
-    await saveState(next);
-    setJustCreated({ id: memberId, email, password });
-    setView("account-created");
+    if (users.some((u) => u.username === username)) return notify("This username is already taken.");
+    if (users.some((u) => u.phone === phone)) return notify("This phone number is already registered.");
+    const sponsorUser = sponsor ? users.find((u) => u.memberId === sponsor.toUpperCase()) : null;
+    try {
+      const memberId = await getNextMemberId();
+      const newUser = {
+        id: memberId,
+        memberId,
+        name, phone, cnic, email, username, password,
+        sponsorId: sponsorUser ? sponsorUser.memberId : null,
+        walletBalance: 0,
+        points: 0,
+        joinedAt: new Date().toISOString(),
+      };
+      await addUserDoc(newUser);
+      setJustCreated({ id: memberId, email, password, username });
+      setView("account-created");
+    } catch (e) {
+      console.error(e);
+      notify("Could not create your account — please check your connection and try again.");
+    }
   };
 
   const finishOnboarding = async () => {
@@ -232,13 +245,12 @@ export default function App() {
   const dismissDisclaimer = async () => {
     setShowDisclaimer(false);
     setRevealSCS(true);
-    setTimeout(async () => {
+    setTimeout(() => {
       setRevealSCS(false);
       try {
-        localStorage.setItem("scs-session", justCreated ? state.users.find(u=>u.memberId===justCreated.id)?.username : currentUser);
+        localStorage.setItem("scs-session", justCreated ? justCreated.username : currentUser);
       } catch (e) {}
-      const u = state.users.find((x) => x.memberId === justCreated?.id);
-      if (u) setCurrentUser(u.username);
+      if (justCreated) setCurrentUser(justCreated.username);
       setJustCreated(null);
       setView("dashboard");
     }, 1400);
@@ -251,7 +263,7 @@ export default function App() {
       notify("Signed in as admin.");
       return;
     }
-    const u = state?.users.find((x) => x.username === username && x.password === password);
+    const u = users.find((x) => x.username === username && x.password === password);
     if (!u) return notify("Invalid username or password.");
     localStorage.setItem("scs-session", u.username);
     setCurrentUser(u.username);
@@ -268,9 +280,13 @@ export default function App() {
 
   const updatePassword = async (newPassword) => {
     if (!me || !newPassword) return;
-    const users = state.users.map((u) => (u.username === me.username ? { ...u, password: newPassword } : u));
-    await saveState({ ...state, users });
-    notify("Password updated.");
+    try {
+      await updateUserDoc(me.username, { password: newPassword });
+      notify("Password updated.");
+    } catch (e) {
+      console.error(e);
+      notify("Could not update password.");
+    }
   };
 
   const addToCart = (id) => {
@@ -285,18 +301,16 @@ export default function App() {
     });
   };
   const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
-  const cartTotal = state
-    ? Object.entries(cart).reduce((s, [id, qty]) => {
-        const p = state.products.find((x) => x.id === id);
-        return s + (p ? p.customerPrice * qty : 0);
-      }, 0)
-    : 0;
+  const cartTotal = Object.entries(cart).reduce((s, [id, qty]) => {
+    const p = products.find((x) => x.id === id);
+    return s + (p ? p.customerPrice * qty : 0);
+  }, 0);
 
   const placeOrder = async (form) => {
     if (!me) return notify("Please log in to place an order.");
     if (cartCount === 0) return;
     const items = Object.entries(cart).map(([id, qty]) => {
-      const p = state.products.find((x) => x.id === id);
+      const p = products.find((x) => x.id === id);
       return { productId: id, name: p.name, customerPrice: p.customerPrice, consultantPrice: p.consultantPrice, points: p.points, qty };
     });
     const order = {
@@ -312,51 +326,60 @@ export default function App() {
       date: new Date().toISOString(),
       cashbackAwarded: null,
       pointsAwarded: null,
+      creditGranted: false,
     };
-    const products = state.products.map((p) => {
-      const item = items.find((i) => i.productId === p.id);
-      return item ? { ...p, stock: Math.max(0, p.stock - item.qty) } : p;
-    });
-    await saveState({ ...state, products, orders: [order, ...state.orders] });
-    setCart({});
-    notify("Order placed successfully.");
-    setView("dashboard");
+    try {
+      await addOrderDoc(order);
+      for (const item of items) {
+        const p = products.find((x) => x.id === item.productId);
+        if (p) await updateProductDoc(p.id, { stock: Math.max(0, p.stock - item.qty) });
+      }
+      setCart({});
+      notify("Order placed successfully.");
+      setView("dashboard");
+    } catch (e) {
+      console.error(e);
+      notify("Could not place order — please try again.");
+    }
   };
 
   const adminUpdateOrderStatus = async (orderId, status, cashback, points) => {
-    const order = state.orders.find((o) => o.id === orderId);
+    const order = orders.find((o) => o.id === orderId);
     if (!order) return;
-    // Only ever credit wallet/points once — on the transition into "delivered",
-    // and only if this order hasn't already been credited before.
-    let users = state.users;
-    let cashbackAwarded = order.cashbackAwarded;
-    let pointsAwarded = order.pointsAwarded;
-    if (status === "delivered" && !order.creditGranted) {
-      const cAmt = Number(cashback || 0);
-      const pAmt = Number(points || 0);
-      users = users.map((u) =>
-        u.username === order.userId ? { ...u, walletBalance: u.walletBalance + cAmt, points: u.points + pAmt } : u
-      );
-      cashbackAwarded = cAmt;
-      pointsAwarded = pAmt;
+    try {
+      if (status === "delivered" && !order.creditGranted) {
+        const cAmt = Number(cashback || 0);
+        const pAmt = Number(points || 0);
+        await updateOrderDoc(orderId, { status, cashbackAwarded: cAmt, pointsAwarded: pAmt, creditGranted: true });
+        await creditUserWallet(order.userId, cAmt, pAmt);
+      } else {
+        await updateOrderDoc(orderId, { status });
+      }
+      notify("Order updated.");
+    } catch (e) {
+      console.error(e);
+      notify("Could not update order.");
     }
-    const orders = state.orders.map((o) =>
-      o.id === orderId
-        ? { ...o, status, cashbackAwarded, pointsAwarded, creditGranted: o.creditGranted || status === "delivered" }
-        : o
-    );
-    await saveState({ ...state, users, orders });
-    notify("Order updated.");
   };
 
   const addProduct = async (p) => {
     const product = { id: genId("p"), name: p.name, category: p.category, image: p.image, consultantPrice: Number(p.consultantPrice), customerPrice: Number(p.customerPrice), points: Number(p.points), stock: Number(p.stock) };
-    await saveState({ ...state, products: [...state.products, product] });
-    notify("Product added.");
+    try {
+      await addProductDoc(product);
+      notify("Product added.");
+    } catch (e) {
+      console.error(e);
+      notify("Could not add product.");
+    }
   };
   const removeProduct = async (id) => {
-    await saveState({ ...state, products: state.products.filter((p) => p.id !== id) });
-    notify("Product removed.");
+    try {
+      await deleteProductDoc(id);
+      notify("Product removed.");
+    } catch (e) {
+      console.error(e);
+      notify("Could not remove product.");
+    }
   };
 
   const requestWithdrawal = async (form) => {
@@ -366,24 +389,30 @@ export default function App() {
     if (!amount || amount <= 0 || amount > me.walletBalance) return notify("Enter a valid amount within your wallet balance.");
     if (!form.accountTitle || !form.accountNumber || !form.bankName) return notify("Please fill in your account details.");
     const w = { id: genId("w"), userId: me.username, userName: me.name, memberId: me.memberId, amount, accountTitle: form.accountTitle, accountNumber: form.accountNumber, bankName: form.bankName, status: "pending", date: new Date().toISOString() };
-    const users = state.users.map((u) => (u.username === me.username ? { ...u, walletBalance: u.walletBalance - amount } : u));
-    await saveState({ ...state, users, withdrawals: [w, ...state.withdrawals] });
-    notify("Withdrawal request submitted.");
+    try {
+      await addWithdrawalDoc(w);
+      await creditUserWallet(me.username, -amount, 0);
+      notify("Withdrawal request submitted.");
+    } catch (e) {
+      console.error(e);
+      notify("Could not submit withdrawal request.");
+    }
   };
 
   const resolveWithdrawal = async (id, action) => {
-    const w = state.withdrawals.find((x) => x.id === id);
+    const w = withdrawals.find((x) => x.id === id);
     if (!w || w.status !== "pending") return;
-    let users = state.users;
-    if (action === "rejected") {
-      users = users.map((u) => (u.username === w.userId ? { ...u, walletBalance: u.walletBalance + w.amount } : u));
+    try {
+      await updateWithdrawalDoc(id, { status: action });
+      if (action === "rejected") await creditUserWallet(w.userId, w.amount, 0);
+      notify(`Withdrawal marked ${action}.`);
+    } catch (e) {
+      console.error(e);
+      notify("Could not update withdrawal.");
     }
-    const withdrawals = state.withdrawals.map((x) => (x.id === id ? { ...x, status: action } : x));
-    await saveState({ ...state, users, withdrawals });
-    notify(`Withdrawal marked ${action}.`);
   };
 
-  if (loading || !state) {
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="flex flex-col items-center gap-3">
