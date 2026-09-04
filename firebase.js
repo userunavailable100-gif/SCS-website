@@ -1,6 +1,13 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import {
+  getFirestore, collection, doc, onSnapshot, setDoc, updateDoc,
+  deleteDoc, increment, runTransaction,
+} from "firebase/firestore";
 
+// 1. Go to https://console.firebase.google.com
+// 2. Create a free project (no credit card needed)
+// 3. Inside the project: Build > Firestore Database > Create database (start in "test mode" for now)
+// 4. Project settings (gear icon) > Your apps > Add app > Web (</>) > copy the config below
 const firebaseConfig = {
   apiKey: "AIzaSyCcppsuSknpMCuMvhsIqPgkjaNsB4-Ifxk",
   authDomain: "scsproject-6d469.firebaseapp.com",
@@ -11,15 +18,63 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+export const db = getFirestore(app);
 
-const STATE_DOC = doc(db, "scs", "platform-state");
+// Each entity lives in its own collection with its own document per record.
+// This means an admin adding a product and a member registering at the same
+// time never overwrite each other's data (the old single-document design did).
+// onSnapshot keeps every connected browser live-updated automatically.
 
-export async function loadPlatformState() {
-  const snap = await getDoc(STATE_DOC);
-  return snap.exists() ? snap.data().value : null;
+function subscribe(collectionName, callback) {
+  const ref = collection(db, collectionName);
+  return onSnapshot(
+    ref,
+    (snap) => {
+      const rows = snap.docs.map((d) => ({ ...d.data(), _docId: d.id }));
+      callback(rows);
+    },
+    (err) => console.error(`Failed to sync ${collectionName}:`, err)
+  );
 }
 
-export async function savePlatformState(jsonString) {
-  await setDoc(STATE_DOC, { value: jsonString, updatedAt: new Date().toISOString() });
+// ---- products ----
+export const subscribeProducts = (cb) => subscribe("products", cb);
+export const addProductDoc = (p) => setDoc(doc(db, "products", p.id), p);
+export const updateProductDoc = (id, data) => updateDoc(doc(db, "products", id), data);
+export const deleteProductDoc = (id) => deleteDoc(doc(db, "products", id));
+
+// ---- users (doc id = username, so it's unique automatically) ----
+export const subscribeUsers = (cb) => subscribe("users", cb);
+export const addUserDoc = (u) => setDoc(doc(db, "users", u.username), u);
+export const updateUserDoc = (username, data) => updateDoc(doc(db, "users", username), data);
+// Atomically add/subtract wallet balance and points without needing to know
+// the current value first — this is what prevents the "double points" and
+// "changes get overwritten" bugs.
+export const creditUserWallet = (username, walletDelta, pointsDelta) =>
+  updateDoc(doc(db, "users", username), {
+    walletBalance: increment(walletDelta),
+    points: increment(pointsDelta),
+  });
+
+// ---- orders ----
+export const subscribeOrders = (cb) => subscribe("orders", cb);
+export const addOrderDoc = (o) => setDoc(doc(db, "orders", o.id), o);
+export const updateOrderDoc = (id, data) => updateDoc(doc(db, "orders", id), data);
+
+// ---- withdrawals ----
+export const subscribeWithdrawals = (cb) => subscribe("withdrawals", cb);
+export const addWithdrawalDoc = (w) => setDoc(doc(db, "withdrawals", w.id), w);
+export const updateWithdrawalDoc = (id, data) => updateDoc(doc(db, "withdrawals", id), data);
+
+// ---- member ID counter (transaction-safe so two people registering at the
+// exact same second never get the same ID) ----
+export async function getNextMemberId() {
+  const counterRef = doc(db, "counters", "members");
+  const memberId = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(counterRef);
+    const current = snap.exists() ? snap.data().next : 100001;
+    tx.set(counterRef, { next: current + 1 }, { merge: true });
+    return `SCS-${current}`;
+  });
+  return memberId;
 }
