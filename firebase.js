@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import {
   getFirestore, collection, doc, onSnapshot, setDoc, updateDoc,
-  deleteDoc, increment, runTransaction,
+  deleteDoc, increment, runTransaction, arrayUnion, arrayRemove,
 } from "firebase/firestore";
 
 // 1. Go to https://console.firebase.google.com
@@ -55,6 +55,31 @@ export const creditUserWallet = (username, walletDelta, pointsDelta) =>
     walletBalance: increment(walletDelta),
     points: increment(pointsDelta),
   });
+
+// Adds to the member's lifetime withdrawn total (only called once a
+// withdrawal is actually marked "paid" — not at request time).
+export const addToTotalEarning = (username, amount) =>
+  updateDoc(doc(db, "users", username), { totalEarning: increment(amount) });
+
+// Records that a member has reached a new rank, queues its gift for
+// claiming, and stores the announcement so the admin panel can show the
+// same congratulations card.
+export const setUserRankProgress = (username, rankIndex, newGiftIndices, rankInfo) => {
+  const updates = {
+    rankIndex,
+    lastRankUp: { ...rankInfo, date: new Date().toISOString() },
+  };
+  if (newGiftIndices.length) updates.unclaimedGifts = arrayUnion(...newGiftIndices);
+  return updateDoc(doc(db, "users", username), updates);
+};
+
+// Claims one rank's gift: removes it from the pending list and, for cash
+// gifts, credits the amount straight to cashback (wallet balance).
+export const claimGiftDoc = (username, rankIndex, cashAmount) => {
+  const updates = { unclaimedGifts: arrayRemove(rankIndex) };
+  if (typeof cashAmount === "number") updates.walletBalance = increment(cashAmount);
+  return updateDoc(doc(db, "users", username), updates);
+};
 
 // ---- orders ----
 export const subscribeOrders = (cb) => subscribe("orders", cb);
