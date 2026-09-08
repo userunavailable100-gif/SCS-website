@@ -6,7 +6,25 @@ import {
   Eye, EyeOff, Minus, Clock, Loader, XCircle, CheckCircle2,
   MoreVertical, Share2, Home as HomeIcon, LayoutDashboard
 } from "lucide-react";
-import { subscribeProducts, subscribeUsers, subscribeOrders, subscribeWithdrawals, addProductDoc, updateProductDoc, deleteProductDoc, addUserDoc, updateUserDoc, creditUserWallet, addOrderDoc, updateOrderDoc, addWithdrawalDoc, updateWithdrawalDoc, getNextMemberId } from "./firebase";
+import { subscribeProducts, subscribeUsers, subscribeOrders, subscribeWithdrawals, addProductDoc, updateProductDoc, deleteProductDoc, addUserDoc, updateUserDoc, creditUserWallet, addToTotalEarning, setUserRankProgress, claimGiftDoc, addOrderDoc, updateOrderDoc, addWithdrawalDoc, updateWithdrawalDoc, getNextMemberId } from "./firebase";
+
+const RANKS = [
+  { points: 100, percent: 6, title: "Consultant", gift: 200 },
+  { points: 400, percent: 10, title: "Senior Consultant", gift: 350 },
+  { points: 1000, percent: 14, title: "Executive Consultant", gift: 500 },
+  { points: 2500, percent: 18, title: "Team Leader", gift: 1000 },
+  { points: 7000, percent: 22, title: "Sales Manager", gift: 1500 },
+  { points: 15000, percent: 26, title: "Senior Sales Manager", gift: 5000 },
+  { points: 40000, percent: 30, title: "Executive Manager", gift: 10000 },
+  { points: 60000, percent: 40, title: "Director", gift: 50000 },
+  { points: 70000, percent: null, title: "Regional Director", gift: 100000 },
+  { points: 90000, percent: null, title: "National Director", gift: "Umrah Package" },
+];
+function getRankIndex(points) {
+  let idx = -1;
+  RANKS.forEach((r, i) => { if (points >= r.points) idx = i; });
+  return idx;
+}
 
 const ADMIN_USERNAME = "scs_owner_26";
 const ADMIN_PASS = "Scs#Vault!9247Qx";
@@ -102,6 +120,7 @@ export default function App() {
   const [showDisclaimer, setShowDisclaimer] = useState(false);
   const [revealSCS, setRevealSCS] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [rankPopup, setRankPopup] = useState(null);
 
   const loading = !(loadedFlags.products && loadedFlags.users && loadedFlags.orders && loadedFlags.withdrawals);
   // This combined object is rebuilt every render from the four live-synced
@@ -207,6 +226,26 @@ export default function App() {
     ? users.find((u) => u.username === currentUser)
     : null;
 
+  // Watches this member's points and automatically unlocks the next rank(s)
+  // + queues the gift for claiming, the moment their points cross a threshold.
+  useEffect(() => {
+    if (!me) return;
+    const achieved = getRankIndex(me.points || 0);
+    const current = typeof me.rankIndex === "number" ? me.rankIndex : -1;
+    if (achieved > current) {
+      const newIndices = [];
+      for (let i = current + 1; i <= achieved; i++) newIndices.push(i);
+      (async () => {
+        try {
+          await setUserRankProgress(me.username, achieved, newIndices, RANKS[achieved]);
+          setRankPopup(RANKS[achieved]);
+        } catch (e) {
+          console.error(e);
+        }
+      })();
+    }
+  }, [me?.points, me?.username]);
+
   const handleVerify = () => {
     setVerified(true);
     setView("home");
@@ -243,6 +282,9 @@ export default function App() {
         sponsorId: sponsorUser ? sponsorUser.memberId : null,
         walletBalance: 0,
         points: 0,
+        totalEarning: 0,
+        rankIndex: -1,
+        unclaimedGifts: [],
         joinedAt: new Date().toISOString(),
       };
       await addUserDoc(newUser);
@@ -430,11 +472,46 @@ export default function App() {
     if (!w || w.status !== "pending") return;
     try {
       await updateWithdrawalDoc(id, { status: action });
-      if (action === "rejected") await creditUserWallet(w.userId, w.amount, 0);
+      if (action === "rejected") {
+        await creditUserWallet(w.userId, w.amount, 0);
+      } else if (action === "paid") {
+        await addToTotalEarning(w.userId, w.amount);
+      }
       notify(`Withdrawal marked ${action}.`);
     } catch (e) {
       console.error(e);
       notify("Could not update withdrawal.");
+    }
+  };
+
+  const claimGift = async (rankIndex) => {
+    if (!me) return;
+    const rank = RANKS[rankIndex];
+    const cashAmount = typeof rank.gift === "number" ? rank.gift : null;
+    try {
+      await claimGiftDoc(me.username, rankIndex, cashAmount);
+      notify(cashAmount ? `Rs ${cashAmount} gift added to your cashback!` : "Gift claimed — our team will contact you to arrange it.");
+    } catch (e) {
+      console.error(e);
+      notify("Could not claim gift.");
+    }
+  };
+
+  const handleForgotPassword = async ({ identifier, cnic, newPassword }) => {
+    const cnicDigits = (cnic || "").replace(/[^\d]/g, "");
+    const validPassword = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@#$%^&*!_-]{6,}$/.test(newPassword);
+    if (!validPassword) return notify("New password must be at least 6 characters and include both letters and numbers.");
+    const match = users.find(
+      (u) => (u.username === identifier || u.phone === identifier) && (u.cnic || "").replace(/[^\d]/g, "") === cnicDigits
+    );
+    if (!match) return notify("No account found matching those details.");
+    try {
+      await updateUserDoc(match.username, { password: newPassword });
+      notify("Password updated — you can log in now.");
+      setView("login");
+    } catch (e) {
+      console.error(e);
+      notify("Could not reset password.");
     }
   };
 
@@ -484,6 +561,7 @@ export default function App() {
       )}
 
       {showDisclaimer && <DisclaimerModal onClose={dismissDisclaimer} />}
+      {rankPopup && <RankCongratsModal rank={rankPopup} onClose={() => setRankPopup(null)} />}
       {revealSCS && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "#1A1220" }}>
           <span style={{ fontFamily: "'Playfair Display', serif", color: "#F4D9A0", fontSize: 64, fontWeight: 700, letterSpacing: 4 }} className="animate-pulse">
@@ -551,7 +629,8 @@ export default function App() {
 
           <main className="max-w-6xl mx-auto px-5 py-10">
             {view === "home" && <Home state={state} addToCart={addToCart} setView={setView} me={me} />}
-            {view === "login" && <AuthLogin onSubmit={handleLogin} switchView={() => setView("register")} />}
+            {view === "login" && <AuthLogin onSubmit={handleLogin} switchView={() => setView("register")} goForgot={() => setView("forgot-password")} />}
+            {view === "forgot-password" && <ForgotPassword onSubmit={handleForgotPassword} switchView={() => setView("login")} />}
             {view === "register" && <AuthRegister onSubmit={handleRegister} switchView={() => setView("login")} defaultSponsor={refFromUrl} />}
             {view === "cart" && (
               <Cart state={state} cart={cart} changeQty={changeQty} total={cartTotal} me={me} goLogin={() => setView("login")} goCheckout={() => setView("checkout")} />
@@ -570,6 +649,7 @@ export default function App() {
                 notify={notify}
                 requestWithdrawal={requestWithdrawal}
                 updatePassword={updatePassword}
+                claimGift={claimGift}
               />
             )}
             {view === "admin" && isAdmin && (
@@ -759,7 +839,7 @@ function AuthRegister({ onSubmit, switchView, defaultSponsor }) {
   );
 }
 
-function AuthLogin({ onSubmit, switchView }) {
+function AuthLogin({ onSubmit, switchView, goForgot }) {
   const [form, setForm] = useState({ username: "", password: "" });
   return (
     <div className="max-w-sm mx-auto scs-card rounded-xl p-8">
@@ -770,10 +850,54 @@ function AuthLogin({ onSubmit, switchView }) {
         <input type="password" className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="Password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
         <button onClick={() => onSubmit(form)} className="scs-btn rounded-lg py-2.5 w-full font-semibold text-sm mt-2">Log in</button>
       </div>
-      <p className="text-xs scs-muted mt-5 text-center">
+      <p className="text-xs scs-muted mt-4 text-center">
+        <button onClick={goForgot} className="scs-maroon underline">Forgot password?</button>
+      </p>
+      <p className="text-xs scs-muted mt-3 text-center">
         New here? <button onClick={switchView} className="scs-maroon underline">Create an account</button>
       </p>
       <p className="text-xs scs-muted mt-3 text-center">Admin login is separate — use your assigned admin credentials.</p>
+    </div>
+  );
+}
+
+function ForgotPassword({ onSubmit, switchView }) {
+  const [form, setForm] = useState({ identifier: "", cnic: "", newPassword: "" });
+  return (
+    <div className="max-w-sm mx-auto scs-card rounded-xl p-8">
+      <h2 className="text-2xl font-bold mb-1" style={{ fontFamily: "'Playfair Display', serif", color: "#1A1220" }}>Reset password</h2>
+      <p className="scs-muted text-sm mb-6">Verify your identity to set a new password.</p>
+      <div className="space-y-3">
+        <input className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="Username or phone number" value={form.identifier} onChange={(e) => setForm({ ...form, identifier: e.target.value })} />
+        <input className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="CNIC number (for verification)" value={form.cnic} onChange={(e) => setForm({ ...form, cnic: e.target.value })} />
+        <input type="password" className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" placeholder="New password (letters + numbers, min 6)" value={form.newPassword} onChange={(e) => setForm({ ...form, newPassword: e.target.value })} />
+        <button onClick={() => onSubmit(form)} className="scs-btn rounded-lg py-2.5 w-full font-semibold text-sm mt-2">Reset password</button>
+      </div>
+      <p className="text-xs scs-muted mt-5 text-center">
+        <button onClick={switchView} className="scs-maroon underline">Back to login</button>
+      </p>
+    </div>
+  );
+}
+
+function RankCongratsModal({ rank, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-5" style={{ background: "rgba(26,18,32,0.7)" }}>
+      <div className="bg-white rounded-xl p-8 max-w-sm w-full relative text-center">
+        <button onClick={onClose} className="absolute top-4 right-4"><X size={18} style={{ color: "#8A8290" }} /></button>
+        <Award size={40} className="mx-auto mb-3" style={{ color: "#D8A94E" }} />
+        <h2 className="text-xl font-bold mb-2" style={{ fontFamily: "'Playfair Display', serif", color: "#1A1220" }}>Congratulations!</h2>
+        <p className="text-sm mb-1" style={{ color: "#1A1220" }}>
+          You opened your {rank.percent ? `${rank.percent}% ` : ""}rank!
+        </p>
+        <p className="text-sm mb-4" style={{ color: "#1A1220" }}>
+          You are now a <b className="scs-maroon">{rank.title}</b> in SCS Company. Best of luck for the next one!
+        </p>
+        <div className="scs-badge rounded-lg py-2 px-4 inline-block text-sm scs-maroon font-semibold mb-5">
+          🎁 Gift: {typeof rank.gift === "number" ? fmt(rank.gift) : rank.gift}
+        </div>
+        <button onClick={onClose} className="scs-btn rounded-lg py-2.5 w-full font-semibold text-sm">Continue</button>
+      </div>
     </div>
   );
 }
@@ -897,7 +1021,7 @@ function OrderStatusList({ orders }) {
   );
 }
 
-function Dashboard({ me, orders, partners, groups, withdrawals, referralLink, notify, requestWithdrawal, updatePassword }) {
+function Dashboard({ me, orders, partners, groups, withdrawals, referralLink, notify, requestWithdrawal, updatePassword, claimGift }) {
   const [showPw, setShowPw] = useState(false);
   const [newPw, setNewPw] = useState("");
   const [wForm, setWForm] = useState({ amount: "", accountTitle: "", accountNumber: "", bankName: "" });
@@ -907,14 +1031,38 @@ function Dashboard({ me, orders, partners, groups, withdrawals, referralLink, no
     catch (e) { notify(`Your ID: ${me.memberId}`); }
   };
 
+  const rankIndex = typeof me.rankIndex === "number" ? me.rankIndex : -1;
+  const currentRank = rankIndex >= 0 ? RANKS[rankIndex] : null;
+  const nextRank = RANKS[rankIndex + 1];
+  const unclaimedGifts = me.unclaimedGifts || [];
+  const pendingAmount = withdrawals.filter((w) => w.status === "pending").reduce((s, w) => s + w.amount, 0);
+
   return (
     <div>
       <h2 className="text-2xl font-bold mb-1" style={{ fontFamily: "'Playfair Display', serif", color: "#1A1220" }}>Hi, {me.name.split(" ")[0]}</h2>
-      <p className="scs-muted text-sm mb-8">Member ID: <span className="scs-maroon font-medium">{me.memberId}</span></p>
+      <p className="scs-muted text-sm mb-1">Member ID: <span className="scs-maroon font-medium">{me.memberId}</span> · Points: <span className="scs-maroon font-medium">{me.points}</span></p>
+      <p className="scs-muted text-sm mb-8">
+        Rank: <span className="scs-maroon font-medium">{currentRank ? `${currentRank.title}${currentRank.percent ? ` (${currentRank.percent}%)` : ""}` : "Not yet ranked"}</span>
+        {nextRank && <span> · Next: {nextRank.title} at {nextRank.points} points</span>}
+      </p>
+
+      {unclaimedGifts.length > 0 && (
+        <div className="scs-card rounded-xl p-5 mb-6" style={{ border: "1px solid #D8A94E" }}>
+          <h3 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: "#1A1220" }}>🎁 Gifts waiting to be claimed</h3>
+          <div className="space-y-2">
+            {unclaimedGifts.map((idx) => (
+              <div key={idx} className="flex items-center justify-between text-sm">
+                <span style={{ color: "#1A1220" }}>{RANKS[idx].title} gift — {typeof RANKS[idx].gift === "number" ? fmt(RANKS[idx].gift) : RANKS[idx].gift}</span>
+                <button onClick={() => claimGift(idx)} className="scs-btn text-xs px-3 py-1.5 rounded-lg">Claim</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid sm:grid-cols-4 gap-4 mb-8">
-        <StatCard icon={Wallet} label="Wallet balance" value={fmt(me.walletBalance)} />
-        <StatCard icon={TrendingUp} label="Points" value={me.points} />
+        <StatCard icon={Wallet} label="Cashback" value={fmt(me.walletBalance)} />
+        <StatCard icon={TrendingUp} label="Total Earning" value={fmt(me.totalEarning || 0)} />
         <StatCard icon={Users} label="Partners" value={partners.length} />
         <StatCard icon={Award} label="Groups" value={groups} />
       </div>
@@ -960,6 +1108,10 @@ function Dashboard({ me, orders, partners, groups, withdrawals, referralLink, no
           )}
           {withdrawals.length > 0 && (
             <div className="mt-4 space-y-1">
+              <div className="flex justify-between text-xs py-1 font-semibold" style={{ color: "#1A1220" }}>
+                <span>Cashout requests (pending)</span>
+                <span className="scs-gold">{fmt(pendingAmount)}</span>
+              </div>
               {withdrawals.map((w) => (
                 <div key={w.id} className="flex justify-between text-xs py-1" style={{ borderTop: "1px solid #ECE6EA" }}>
                   <span className="scs-muted">{fmt(w.amount)}</span>
@@ -1008,8 +1160,8 @@ function Admin({ state, addProduct, removeProduct, adminUpdateOrderStatus, resol
       </div>
 
       <div className="flex gap-2 mb-6 text-sm flex-wrap">
-        {["orders", "overview", "members", "products", "withdrawals"].map((t) => (
-          <button key={t} onClick={() => setTab(t)} className={`px-4 py-2 rounded-lg capitalize ${tab === t ? "scs-btn" : "scs-btn-outline"}`}>{t}</button>
+        {["orders", "overview", "members", "rank-ups", "products", "withdrawals"].map((t) => (
+          <button key={t} onClick={() => setTab(t)} className={`px-4 py-2 rounded-lg capitalize ${tab === t ? "scs-btn" : "scs-btn-outline"}`}>{t.replace("-", " ")}</button>
         ))}
       </div>
 
@@ -1017,7 +1169,7 @@ function Admin({ state, addProduct, removeProduct, adminUpdateOrderStatus, resol
         <div className="grid sm:grid-cols-3 gap-4">
           <StatCard icon={Users} label="Total members" value={state.users.length} />
           <StatCard icon={TrendingUp} label="Total sales" value={fmt(totalSales)} />
-          <StatCard icon={Wallet} label="Total wallet balances" value={fmt(totalCashback)} />
+          <StatCard icon={Wallet} label="Total cashback balances" value={fmt(totalCashback)} />
         </div>
       )}
 
@@ -1053,18 +1205,44 @@ function Admin({ state, addProduct, removeProduct, adminUpdateOrderStatus, resol
 
       {tab === "members" && (
         <div className="scs-card rounded-xl p-5">
-          {state.users.map((u) => (
-            <div key={u.id} className="flex justify-between text-sm py-2" style={{ borderBottom: "1px solid #ECE6EA" }}>
-              <div>
-                <div style={{ color: "#1A1220" }}>{u.name} <span className="scs-muted text-xs">({u.memberId})</span></div>
-                <div className="text-xs scs-muted">{u.phone} · CNIC {u.cnic} · {u.sponsorId ? `sponsored by ${u.sponsorId}` : "no sponsor"}</div>
+          {state.users.map((u) => {
+            const rank = typeof u.rankIndex === "number" && u.rankIndex >= 0 ? RANKS[u.rankIndex] : null;
+            return (
+              <div key={u.id} className="flex justify-between text-sm py-2" style={{ borderBottom: "1px solid #ECE6EA" }}>
+                <div>
+                  <div style={{ color: "#1A1220" }}>{u.name} <span className="scs-muted text-xs">({u.memberId})</span></div>
+                  <div className="text-xs scs-muted">{u.phone} · CNIC {u.cnic} · {u.sponsorId ? `sponsored by ${u.sponsorId}` : "no sponsor"}</div>
+                  <div className="text-xs scs-gold">{rank ? `${rank.title}${rank.percent ? ` (${rank.percent}%)` : ""}` : "No rank yet"}</div>
+                </div>
+                <div className="text-right">
+                  <div className="scs-maroon text-xs">{fmt(u.walletBalance)}</div>
+                  <div className="text-xs scs-muted">{u.points} pts · earned {fmt(u.totalEarning || 0)}</div>
+                </div>
               </div>
-              <div className="text-right">
-                <div className="scs-maroon text-xs">{fmt(u.walletBalance)}</div>
-                <div className="text-xs scs-muted">{u.points} pts</div>
+            );
+          })}
+        </div>
+      )}
+
+      {tab === "rank-ups" && (
+        <div className="space-y-3">
+          {state.users.filter((u) => u.lastRankUp).length === 0 && <p className="text-sm scs-muted">No rank-ups yet.</p>}
+          {state.users
+            .filter((u) => u.lastRankUp)
+            .sort((a, b) => new Date(b.lastRankUp.date) - new Date(a.lastRankUp.date))
+            .map((u) => (
+              <div key={u.id} className="scs-card rounded-xl p-5 text-center" style={{ border: "1px solid #D8A94E" }}>
+                <Award size={28} className="mx-auto mb-2" style={{ color: "#D8A94E" }} />
+                <div className="text-sm scs-muted mb-1">{fmtDate(u.lastRankUp.date)}</div>
+                <div className="font-bold mb-1" style={{ color: "#1A1220", fontFamily: "'Playfair Display', serif" }}>Congratulations, {u.name}!</div>
+                <div className="text-sm mb-2" style={{ color: "#1A1220" }}>
+                  {u.name} opened their {u.lastRankUp.percent ? `${u.lastRankUp.percent}% ` : ""}rank and is now a <b className="scs-maroon">{u.lastRankUp.title}</b> in SCS Company.
+                </div>
+                <div className="scs-badge rounded-lg py-1.5 px-4 inline-block text-sm scs-maroon font-semibold">
+                  🎁 {typeof u.lastRankUp.gift === "number" ? fmt(u.lastRankUp.gift) : u.lastRankUp.gift}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
         </div>
       )}
 
