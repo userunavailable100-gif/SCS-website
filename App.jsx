@@ -4,7 +4,7 @@ import {
   TrendingUp, Package, Shield, Plus, Trash2, Check, X,
   ChevronRight, ArrowDownCircle, ShieldCheck, Truck, Award,
   Eye, EyeOff, Minus, Clock, Loader, XCircle, CheckCircle2,
-  MoreVertical, Share2, Home as HomeIcon, LayoutDashboard
+  MoreVertical, Share2, Home as HomeIcon, LayoutDashboard, Edit3
 } from "lucide-react";
 import { subscribeProducts, subscribeUsers, subscribeOrders, subscribeWithdrawals, addProductDoc, updateProductDoc, deleteProductDoc, addUserDoc, updateUserDoc, creditUserWallet, addToTotalEarning, setUserRankProgress, claimGiftDoc, addOrderDoc, updateOrderDoc, addWithdrawalDoc, updateWithdrawalDoc, getNextMemberId } from "./firebase";
 
@@ -30,13 +30,14 @@ const ADMIN_USERNAME = "scs_owner_26";
 const ADMIN_PASS = "Scs#Vault!9247Qx";
 const GROUP_SIZE = 10;
 const WITHDRAW_MIN_POINTS = 100;
+const DELIVERY_CHARGE = 240;
 
 const seedProducts = [
-  { id: "p1", name: "Glass Skin Rice Serum", category: "Skincare", image: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=400", consultantPrice: 1800, customerPrice: 2400, points: 3, stock: 40 },
-  { id: "p2", name: "Anti-Melasma Gel", category: "Skincare", image: "https://images.unsplash.com/photo-1571781926291-c477ebfd024b?w=400", consultantPrice: 1450, customerPrice: 1950, points: 3, stock: 35 },
-  { id: "p3", name: "Charcoal Detox Mask", category: "Skincare", image: "https://images.unsplash.com/photo-1608248543803-ba4f8c70ae0b?w=400", consultantPrice: 900, customerPrice: 1200, points: 2, stock: 60 },
-  { id: "p4", name: "Silk Hair Fall Oil", category: "Haircare", image: "https://images.unsplash.com/photo-1608248597279-f99d160bfcbd?w=400", consultantPrice: 1100, customerPrice: 1500, points: 2, stock: 50 },
-  { id: "p5", name: "Keratin Shine Shampoo", category: "Haircare", image: "https://images.unsplash.com/photo-1556228720-195a672e8a03?w=400", consultantPrice: 1050, customerPrice: 1400, points: 2, stock: 45 },
+  { id: "p1", name: "Glass Skin Rice Serum", category: "Skincare", image: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=400", consultantPrice: 1800, customerPrice: 2400, points: 3, inStock: true },
+  { id: "p2", name: "Anti-Melasma Gel", category: "Skincare", image: "https://images.unsplash.com/photo-1571781926291-c477ebfd024b?w=400", consultantPrice: 1450, customerPrice: 1950, points: 3, inStock: true },
+  { id: "p3", name: "Charcoal Detox Mask", category: "Skincare", image: "https://images.unsplash.com/photo-1608248543803-ba4f8c70ae0b?w=400", consultantPrice: 900, customerPrice: 1200, points: 2, inStock: true },
+  { id: "p4", name: "Silk Hair Fall Oil", category: "Haircare", image: "https://images.unsplash.com/photo-1608248597279-f99d160bfcbd?w=400", consultantPrice: 1100, customerPrice: 1500, points: 2, inStock: true },
+  { id: "p5", name: "Keratin Shine Shampoo", category: "Haircare", image: "https://images.unsplash.com/photo-1556228720-195a672e8a03?w=400", consultantPrice: 1050, customerPrice: 1400, points: 2, inStock: true },
 ];
 
 const couriers = ["Leopards Courier", "TCS", "M&P", "PostEx", "Trax"];
@@ -121,6 +122,7 @@ export default function App() {
   const [revealSCS, setRevealSCS] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [rankPopup, setRankPopup] = useState(null);
+  const [isPlacingOrder, setIsPlacingOrder] = useState(false);
 
   const loading = !(loadedFlags.products && loadedFlags.users && loadedFlags.orders && loadedFlags.withdrawals);
   // This combined object is rebuilt every render from the four live-synced
@@ -365,8 +367,10 @@ export default function App() {
   }, 0);
 
   const placeOrder = async (form) => {
+    if (isPlacingOrder) return; // guards against double/triple clicking Confirm Order
     if (!me) return notify("Please log in to place an order.");
     if (cartCount === 0) return;
+    setIsPlacingOrder(true);
     const items = Object.entries(cart).map(([id, qty]) => {
       const p = products.find((x) => x.id === id);
       return { productId: id, name: p.name, customerPrice: p.customerPrice, consultantPrice: p.consultantPrice, points: p.points, qty };
@@ -377,7 +381,9 @@ export default function App() {
       userName: me.name,
       memberId: me.memberId,
       items,
-      total: cartTotal,
+      subtotal: cartTotal,
+      deliveryCharge: DELIVERY_CHARGE,
+      total: cartTotal + DELIVERY_CHARGE,
       status: "pending",
       courier: form.courier,
       address: { name: form.name, phone: form.phone, address: form.address, city: form.city, society: form.society },
@@ -388,16 +394,14 @@ export default function App() {
     };
     try {
       await addOrderDoc(order);
-      for (const item of items) {
-        const p = products.find((x) => x.id === item.productId);
-        if (p) await updateProductDoc(p.id, { stock: Math.max(0, p.stock - item.qty) });
-      }
       setCart({});
-      notify("Order placed successfully.");
+      notify("Your order is confirmed successfully!");
       setView("dashboard");
     } catch (e) {
       console.error(e);
       notify("Could not place order — please try again.");
+    } finally {
+      setIsPlacingOrder(false);
     }
   };
 
@@ -431,13 +435,23 @@ export default function App() {
   };
 
   const addProduct = async (p) => {
-    const product = { id: genId("p"), name: p.name, category: p.category, image: p.image, consultantPrice: Number(p.consultantPrice), customerPrice: Number(p.customerPrice), points: Number(p.points), stock: Number(p.stock) };
+    const product = { id: genId("p"), name: p.name, category: p.category, image: p.image, consultantPrice: Number(p.consultantPrice), customerPrice: Number(p.customerPrice), points: Number(p.points), inStock: p.inStock !== false };
     try {
       await addProductDoc(product);
       notify("Product added.");
     } catch (e) {
       console.error(e);
       notify("Could not add product.");
+    }
+  };
+  const editProduct = async (id, p) => {
+    const updates = { name: p.name, category: p.category, image: p.image, consultantPrice: Number(p.consultantPrice), customerPrice: Number(p.customerPrice), points: Number(p.points), inStock: p.inStock !== false };
+    try {
+      await updateProductDoc(id, updates);
+      notify("Product updated.");
+    } catch (e) {
+      console.error(e);
+      notify("Could not update product.");
     }
   };
   const removeProduct = async (id) => {
@@ -636,7 +650,7 @@ export default function App() {
               <Cart state={state} cart={cart} changeQty={changeQty} total={cartTotal} me={me} goLogin={() => setView("login")} goCheckout={() => setView("checkout")} />
             )}
             {view === "checkout" && me && (
-              <Checkout me={me} total={cartTotal} onSubmit={placeOrder} />
+              <Checkout me={me} total={cartTotal} onSubmit={placeOrder} isPlacingOrder={isPlacingOrder} />
             )}
             {view === "dashboard" && me && (
               <Dashboard
@@ -653,7 +667,7 @@ export default function App() {
               />
             )}
             {view === "admin" && isAdmin && (
-              <Admin state={state} addProduct={addProduct} removeProduct={removeProduct} adminUpdateOrderStatus={adminUpdateOrderStatus} resolveWithdrawal={resolveWithdrawal} />
+              <Admin state={state} addProduct={addProduct} editProduct={editProduct} removeProduct={removeProduct} adminUpdateOrderStatus={adminUpdateOrderStatus} resolveWithdrawal={resolveWithdrawal} />
             )}
           </main>
 
@@ -777,24 +791,27 @@ function Home({ state, addToCart, setView, me }) {
       </div>
 
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
-        {filtered.map((p) => (
-          <div key={p.id} className="scs-card rounded-xl overflow-hidden flex flex-col">
-            <div className="h-40 bg-gray-100 overflow-hidden">
-              <img src={p.image} alt={p.name} className="w-full h-full object-cover" onError={(e) => (e.target.style.display = "none")} />
-            </div>
-            <div className="p-4 flex flex-col flex-1">
-              <span className="text-xs scs-badge scs-maroon inline-block px-2 py-0.5 rounded-full w-fit mb-2">{p.category}</span>
-              <h3 className="font-semibold mb-1 text-sm" style={{ color: "#1A1220" }}>{p.name}</h3>
-              <div className="flex items-center justify-between mb-3 mt-auto">
-                <span className="scs-maroon font-bold">{fmt(p.customerPrice)}</span>
-                <span className="text-xs scs-muted">{p.stock > 0 ? `${p.stock} in stock` : "Out of stock"}</span>
+        {filtered.map((p) => {
+          const inStock = p.inStock !== false;
+          return (
+            <div key={p.id} className="scs-card rounded-xl overflow-hidden flex flex-col">
+              <div className="h-40 bg-gray-100 overflow-hidden">
+                <img src={p.image} alt={p.name} className="w-full h-full object-cover" onError={(e) => (e.target.style.display = "none")} />
               </div>
-              <button disabled={p.stock === 0} onClick={() => addToCart(p.id)} className="scs-btn-outline rounded-lg py-2 text-sm disabled:opacity-40">
-                Add to cart
-              </button>
+              <div className="p-4 flex flex-col flex-1">
+                <span className="text-xs scs-badge scs-maroon inline-block px-2 py-0.5 rounded-full w-fit mb-2">{p.category}</span>
+                <h3 className="font-semibold mb-1 text-sm" style={{ color: "#1A1220" }}>{p.name}</h3>
+                <div className="flex items-center justify-between mb-3 mt-auto">
+                  <span className="scs-maroon font-bold">{fmt(p.customerPrice)}</span>
+                  <span className="text-xs font-medium" style={{ color: inStock ? "#2E9E6D" : "#C24444" }}>{inStock ? "In Stock" : "Out of Stock"}</span>
+                </div>
+                <button disabled={!inStock} onClick={() => addToCart(p.id)} className="scs-btn-outline rounded-lg py-2 text-sm disabled:opacity-40">
+                  Add to cart
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -932,9 +949,17 @@ function Cart({ state, cart, changeQty, total, me, goLogin, goCheckout }) {
       </div>
       {items.length > 0 && (
         <div className="scs-card rounded-lg p-5">
-          <div className="flex justify-between mb-4 text-sm">
-            <span className="scs-muted">Total</span>
-            <span className="scs-maroon font-bold text-lg">{fmt(total)}</span>
+          <div className="flex justify-between mb-1 text-sm">
+            <span className="scs-muted">Subtotal</span>
+            <span style={{ color: "#1A1220" }}>{fmt(total)}</span>
+          </div>
+          <div className="flex justify-between mb-3 text-sm">
+            <span className="scs-muted">Delivery charges</span>
+            <span style={{ color: "#1A1220" }}>{fmt(DELIVERY_CHARGE)}</span>
+          </div>
+          <div className="flex justify-between mb-4 text-sm pt-3" style={{ borderTop: "1px solid #ECE6EA" }}>
+            <span className="scs-muted font-semibold">Total</span>
+            <span className="scs-maroon font-bold text-lg">{fmt(total + DELIVERY_CHARGE)}</span>
           </div>
           {me ? (
             <button onClick={goCheckout} className="scs-btn rounded-lg py-2.5 w-full font-semibold text-sm">Proceed to checkout</button>
@@ -947,7 +972,7 @@ function Cart({ state, cart, changeQty, total, me, goLogin, goCheckout }) {
   );
 }
 
-function Checkout({ me, total, onSubmit }) {
+function Checkout({ me, total, onSubmit, isPlacingOrder }) {
   const [form, setForm] = useState({ name: me.name, phone: me.phone, address: "", city: "", society: "", courier: couriers[0] });
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   return (
@@ -962,11 +987,21 @@ function Checkout({ me, total, onSubmit }) {
         <select className="scs-input rounded-lg px-3 py-2.5 w-full text-sm" value={form.courier} onChange={set("courier")}>
           {couriers.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
-        <div className="flex justify-between text-sm py-2">
-          <span className="scs-muted">Order total</span>
-          <span className="scs-maroon font-bold">{fmt(total)}</span>
+        <div className="flex justify-between text-xs py-1">
+          <span className="scs-muted">Subtotal</span>
+          <span style={{ color: "#1A1220" }}>{fmt(total)}</span>
         </div>
-        <button onClick={() => onSubmit(form)} className="scs-btn rounded-lg py-2.5 w-full font-semibold text-sm">Confirm order</button>
+        <div className="flex justify-between text-xs pb-1">
+          <span className="scs-muted">Delivery charges</span>
+          <span style={{ color: "#1A1220" }}>{fmt(DELIVERY_CHARGE)}</span>
+        </div>
+        <div className="flex justify-between text-sm py-2" style={{ borderTop: "1px solid #ECE6EA" }}>
+          <span className="scs-muted font-semibold">Order total</span>
+          <span className="scs-maroon font-bold">{fmt(total + DELIVERY_CHARGE)}</span>
+        </div>
+        <button onClick={() => onSubmit(form)} disabled={isPlacingOrder} className="scs-btn rounded-lg py-2.5 w-full font-semibold text-sm disabled:opacity-50">
+          {isPlacingOrder ? "Confirming…" : "Confirm order"}
+        </button>
       </div>
     </div>
   );
@@ -1139,10 +1174,34 @@ function Dashboard({ me, orders, partners, groups, withdrawals, referralLink, no
   );
 }
 
-function Admin({ state, addProduct, removeProduct, adminUpdateOrderStatus, resolveWithdrawal }) {
+function Admin({ state, addProduct, editProduct, removeProduct, adminUpdateOrderStatus, resolveWithdrawal }) {
   const [tab, setTab] = useState("orders");
-  const [newProduct, setNewProduct] = useState({ name: "", category: "Skincare", image: "", consultantPrice: "", customerPrice: "", points: "", stock: "" });
+  const blankProduct = { name: "", category: "Skincare", image: "", consultantPrice: "", customerPrice: "", points: "", inStock: true };
+  const [newProduct, setNewProduct] = useState(blankProduct);
+  const [editingProductId, setEditingProductId] = useState(null);
   const [editing, setEditing] = useState({}); // orderId -> {cashback, points}
+
+  const startEditProduct = (p) => {
+    setEditingProductId(p.id);
+    setNewProduct({
+      name: p.name, category: p.category, image: p.image,
+      consultantPrice: String(p.consultantPrice), customerPrice: String(p.customerPrice),
+      points: String(p.points), inStock: p.inStock !== false,
+    });
+  };
+  const cancelEditProduct = () => {
+    setEditingProductId(null);
+    setNewProduct(blankProduct);
+  };
+  const saveProduct = () => {
+    if (editingProductId) {
+      editProduct(editingProductId, newProduct);
+    } else {
+      addProduct(newProduct);
+    }
+    setEditingProductId(null);
+    setNewProduct(blankProduct);
+  };
 
   const totalSales = state.orders.reduce((s, o) => s + o.total, 0);
   const totalCashback = state.users.reduce((s, u) => s + u.walletBalance, 0);
@@ -1249,7 +1308,7 @@ function Admin({ state, addProduct, removeProduct, adminUpdateOrderStatus, resol
       {tab === "products" && (
         <div>
           <div className="scs-card rounded-xl p-5 mb-5">
-            <h3 className="text-sm font-semibold mb-3" style={{ color: "#1A1220" }}>Add product</h3>
+            <h3 className="text-sm font-semibold mb-3" style={{ color: "#1A1220" }}>{editingProductId ? "Edit product" : "Add product"}</h3>
             <div className="grid sm:grid-cols-2 gap-2 mb-2">
               <input className="scs-input rounded-lg px-3 py-2 text-sm" placeholder="Name" value={newProduct.name} onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })} />
               <select className="scs-input rounded-lg px-3 py-2 text-sm" value={newProduct.category} onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })}>
@@ -1281,25 +1340,53 @@ function Admin({ state, addProduct, removeProduct, adminUpdateOrderStatus, resol
               <input className="scs-input rounded-lg px-3 py-2 text-sm" placeholder="Consultant price" value={newProduct.consultantPrice} onChange={(e) => setNewProduct({ ...newProduct, consultantPrice: e.target.value })} />
               <input className="scs-input rounded-lg px-3 py-2 text-sm" placeholder="Customer price" value={newProduct.customerPrice} onChange={(e) => setNewProduct({ ...newProduct, customerPrice: e.target.value })} />
               <input className="scs-input rounded-lg px-3 py-2 text-sm" placeholder="Points per unit" value={newProduct.points} onChange={(e) => setNewProduct({ ...newProduct, points: e.target.value })} />
-              <input className="scs-input rounded-lg px-3 py-2 text-sm" placeholder="Stock" value={newProduct.stock} onChange={(e) => setNewProduct({ ...newProduct, stock: e.target.value })} />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setNewProduct({ ...newProduct, inStock: true })}
+                  className={`flex-1 rounded-lg text-sm py-2 ${newProduct.inStock ? "scs-btn" : "scs-btn-outline"}`}
+                >
+                  In Stock
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNewProduct({ ...newProduct, inStock: false })}
+                  className={`flex-1 rounded-lg text-sm py-2 ${!newProduct.inStock ? "scs-btn" : "scs-btn-outline"}`}
+                  style={!newProduct.inStock ? { background: "#C24444" } : {}}
+                >
+                  Out of Stock
+                </button>
+              </div>
             </div>
-            <button onClick={() => { addProduct(newProduct); setNewProduct({ name: "", category: "Skincare", image: "", consultantPrice: "", customerPrice: "", points: "", stock: "" }); }} className="scs-btn rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-1.5">
-              <Plus size={14} /> Add product
-            </button>
+            <div className="flex gap-2">
+              <button onClick={saveProduct} className="scs-btn rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-1.5">
+                <Plus size={14} /> {editingProductId ? "Save changes" : "Add product"}
+              </button>
+              {editingProductId && (
+                <button onClick={cancelEditProduct} className="scs-btn-outline rounded-lg px-4 py-2 text-sm font-semibold">Cancel</button>
+              )}
+            </div>
           </div>
           <div className="grid sm:grid-cols-2 gap-3">
-            {state.products.map((p) => (
-              <div key={p.id} className="scs-card rounded-lg p-4 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <img src={p.image} className="w-10 h-10 rounded object-cover bg-gray-100" onError={(e) => (e.target.style.display = "none")} />
-                  <div>
-                    <div className="text-sm" style={{ color: "#1A1220" }}>{p.name}</div>
-                    <div className="text-xs scs-muted">{fmt(p.customerPrice)} · {p.stock} in stock · {p.points} pts</div>
+            {state.products.map((p) => {
+              const inStock = p.inStock !== false;
+              return (
+                <div key={p.id} className="scs-card rounded-lg p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <img src={p.image} className="w-10 h-10 rounded object-cover bg-gray-100" onError={(e) => (e.target.style.display = "none")} />
+                    <div>
+                      <div className="text-sm" style={{ color: "#1A1220" }}>{p.name}</div>
+                      <div className="text-xs scs-muted">{fmt(p.customerPrice)} · {p.points} pts</div>
+                      <div className="text-xs font-medium" style={{ color: inStock ? "#2E9E6D" : "#C24444" }}>{inStock ? "In Stock" : "Out of Stock"}</div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => startEditProduct(p)}><Edit3 size={16} className="scs-maroon" /></button>
+                    <button onClick={() => removeProduct(p.id)}><Trash2 size={16} style={{ color: "#C24444" }} /></button>
                   </div>
                 </div>
-                <button onClick={() => removeProduct(p.id)}><Trash2 size={16} style={{ color: "#C24444" }} /></button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
